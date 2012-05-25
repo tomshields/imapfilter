@@ -1,0 +1,106 @@
+# .inboxfilter - filter file for my inbox
+#
+# My delivery agent sets an "x-envelope-to", so I filter on the
+# address the mail comes to.
+#
+# I also filter out mailing lists, do some mail forwarding, and filter
+# based on who the mail is from
+ 
+# addresses to forward on
+# this can be used for short lists, too
+%forwards = (
+  'somebodyelse' => 'somebody@somewhereelse.com',
+  'shortlist' => 'somebody@somewhereelse.com another@somehwere.com',
+);
+
+# auto-filtering based on from addresses
+%autofiles = (
+  'closefriend@somewhere.com'       => 'INBOX.friends',
+  'contact@somewhere.com'           => 'INBOX.contacts',
+);
+
+# from addresses of lists
+%listfrom = (
+  'listbot@listbot.com'    => 'INBOX.listbot',
+);
+
+# list filtering based on sender address
+%senders = (
+  'bbshop@admin.humberc.on.ca' => 'INBOX.Harmonet',
+  'otherlist@list.com'         => 'INBOX.otherlist',
+);
+
+# keep ALL mail in a folder that will purge messages over 7 days old
+COPY("INBOX.allbackup");
+
+# I use the envelope-to for lots of the following filters
+$envto = $header{'x-envelope-to'};
+$envto = "" unless $envto;
+
+# first, check for forwards based on envelope to
+if ($forwards{$envto}) {
+  BOUNCE($forwards{$envto});
+  EXIT();
+}
+
+# filter most public email lists based on sender
+if (!defined($header{"sender"}) || !$header{"sender"}) {
+  $sender = "";
+} elsif ($header{"sender"} =~ /<([^> ]+)>/) {
+  $sender = lc $1;
+} else {
+  ($sender) = split(' ', $header{"sender"});
+  $sender = lc $sender;
+}
+if ($senders{$sender}) {
+  FILE($senders{$sender});
+  EXIT();
+}
+
+# do auto-filtering into folders based on canonical from address
+if ($from =~ /<([^> ]+)>/) {
+  $canonfrom = $1;
+} else {
+  ($canonfrom) = split(' ', $from);
+}
+
+# if it's from a public list, file and quit
+if ($listfiles{$canonfrom}) {
+  FILE($listfiles{$canonfrom});
+  EXIT();
+}
+
+# if it's another auto-file, file here (and mark Deleted), but
+# continue to file in one if the inboxes
+if ($autofiles{$canonfrom}) {
+  FILE($autofiles{$canonfrom});
+}
+
+# finally, deliver to correct inbox based on envelope to
+if (($envto eq 'mainaddress') || ($envto eq 'otheraddress')) {
+  FILE("INBOX.highpriority");
+  EXIT();
+} elsif ($envto eq 'postaddress') {
+  FILE("INBOX.post");
+  EXIT();
+} elsif ($envto eq 'listaddress') {
+  FILE ("INBOX.list");
+  EXIT();
+}
+
+# if there's no $envto, it's a wierd one - just file
+if (!$envto) {
+  FILE ("INBOX.post");
+  EXIT();
+}
+
+# if it's from somebody I know, but inexplicably not addressed to me, do
+# something reasonable
+if ($autofiles{$canonfrom}) {
+  FILE("INBOX.highpriority");
+  EXIT();
+}
+
+# otherwise save in spam folder, and reject as nonexistent user
+FILE("INBOX.spam");
+REJECT("User <$envto> unknown in domain mydomain.com");

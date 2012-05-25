@@ -1,0 +1,512 @@
+#!/usr/bin/perl -w
+#
+# imapfilter - filter an IMAP mailbox according to a set of rules
+#
+# I use imapfilter to filter my inbox into a set of IMAP folders.
+# I also use it for mail folder maintenance, by running a different
+# rules file over each folder periodically.
+# The advantage this has over other filters (e.g. procmail, mailagent,
+# and zfilter) is that it is totally independent of the mail delivery.
+#
+# written by Tom Shields, 4/4/1998
+# 5/4/98 - added MARK and UNMARK functions
+# 11/2/98 - finally wrote GETBODY and FORWARD
+# 11/16/98 - added FORWARDing to cmd with "|"
+#
+# requires the following packages:
+#   Net::IMAP by Kevin Johnson <kjj@pobox.com>
+#   Date::Parse by Graham Barr <Graham.Barr@pobox.com>
+# some ideas for filter functions borrowed from:
+#   zfilter by Steven Zeck <viper@kuentos.guam.net>
+#
+# TODO:
+#   Finish MAIL, REJECT functions
+#   Built-in to canonicalize an email address, e.g. From/Reply-To
+#   Add ABORT to bail out entirely and stop processing messages
+#   Parse message flags for filter use (could write 'summary' filter
+#     showing new, seen, total in folder)
+#   Add "copyandmarkread" semantic, for archive folders - 2nd param to COPY?
+#   Add BEGIN and END block semantics to filters for one-time init and shutdown
+#     - can simulate now, but ugly
+#     - make sure they get executed even if no messages in folder
+#   Use getopt for option processing
+#   Allow configuration parameters to be set via command line
+#   Improve fetch efficiency by getting more than one header at a time
+#   Figure out way to encrypt password in conf file
+#   Built-in handling of ranges and lists of message numbers efficiently
+#   Add equivalent of perl's "-e" flag for short filters
+#     maybe use "-" to mean read script from stdin
+#   Clean up signal handling a bit - remove lock file
+#   Handle message on stdin - use "-" as folder
+#     would need to be able to store message in IMAP folder
+#   Write 'imapfolder' for folder create/delete/empty/list all/summarize
+#
+
+# avoid namespace collisions - filters run in 'main'
+package ImapFilter;
+
+
+# program info
+$version = "0.81";
+$released = "16 November, 1998";
+
+#
+# Things you might conceivably configure:
+#
+
+# default configuration file name
+$configfilename = "~/.imapfilter";
+
+# default sendmail path
+$defaultsendmail = "/usr/bin/sendmail";
+
+# default lock file name prefix - this must live on a non-NFS drive
+$lockfileprefix = "/tmp/imapfilter.lck";
+
+# headers that are concatenated into '$addressees'
+@addrheaders = ('to', 'cc', 'bcc',
+                'old-to', 'old-cc', 'old-bcc',
+                'x-to', 'x-cc', 'x-bcc',
+                'original-to', 'original-cc', 'original-bcc',
+                'resent-to', 'resent-cc', 'resent-bcc',
+                'apparently-to', 'apparently-resent-to',
+                'x-rcpt-to', 'x-envelope-to');
+
+#
+# Nothing configurable below here, proceed at your own risk
+#
+
+use Net::IMAP;
+use Date::Parse;
+
+sub usage {
+  print STDERR <<EOT;
+Usage: $0 [-h] [-c configfile] mailbox filterfile [filteroptions]
+filter an IMAP mailbox according to a set of rules
+executes filter file once per message in the mailbox
+  -h: print documentation for config and filter files
+  -c: name of config file, defaults to \$HOME/.imapfilter
+EOT
+  exit(1);
+}
+
+sub help {
+  print STDERR <<EOT;
+$0 version $version released $released
+config file (defaults to \$HOME/.imapfilter):
+  LOGIN username              PASSWORD password
+  SERVER hostname             DIRECTORY imapdir
+  ERRORMAIL emailaddress      SENDMAIL sendmailpath
+  ERRORLOG filename           DEBUGLOG filename
+filterfile uses Perl syntax, and provides the following vars and commands:
+  (all commands return 1 for success, and set \$errmsg if failure)
+  \$from, \$to, \$cc, \$subject, \$date, \$tocc - useful headers
+  \$addressees - combined addressee list
+  \$days - date converted to Unix seconds format
+  \$headers, \$header{"word"} - all headers in string or lcase hash
+  \$body - message body, only loaded if GETBODY() executed
+  FILE(foldername) - copy and delete
+  COPY(foldername) - copy but keep
+  DELETE() - obvious, same as MARK(Deleted)
+  BOUNCE(emailaddrs or |cmd) - send on and delete - does GETBODY
+  FORWARD(emailaddrs or |cmd) - send on, but keep - does GETBODY
+  REPLY(filename) - reply with the evaluated file - NOT IMPLEMENTED YET
+  MAIL(filename, emailaddrs) - send the evaluated file - NOT IMPLEMENTED YET
+  GETBODY() - load message body
+  MARK(flag), UNMARK(flag) - flag as Read (Seen), Answered, Draft, or "string"
+  DEBUG(string) - write to debug log
+  ERROR(string) - write to error log and quit this message
+  EXIT() - quit processing this message
+EOT
+  exit(1);
+}
+
+# capture signals for clean exit
+$SIG{'INT'} = \&sigHandler;
+$SIG{'QUIT'} = \&sigHandler;
+$SIG{'HUP'} = \&sigHandler;
+$SIG{'KILL'} = \&sigHandler;
+
+# report all warnings via error mechanism
+$SIG{'__WARN__'} = \&warnSigHandler;
+
+# process command line
+# TODO: use getopt here
+if (defined($ARGV[0]) && ($ARGV[0] eq "-h")) {
+  help();
+}
+
+# "hidden" debug flag to stderr
+if (defined($ARGV[0]) && ($ARGV[0] eq "-d")) {
+  shift; $debugtostderr = 1;
+}
+
+if (defined($ARGV[0]) && ($ARGV[0] eq "-c")) {
+  $configfilename = $ARGV[1];
+  shift; shift;
+}
+
+$FOLDERNAME = shift;
+$FILTERNAME = shift;
+
+usage() unless $FOLDERNAME && $FILTERNAME;
+
+# read the config and filter files
+readConfig($configfilename);
+readFilter($FILTERNAME);
+
+DEBUG("Running $FILTERNAME on $FOLDERNAME.");
+
+# check for lock file - don't run two of these on same folder/same time
+($lockfolder = $FOLDERNAME) =~ s#[/ ]#_#g;
+$lockfilename = "$lockfileprefix.$CONFIG{SERVER}.$CONFIG{LOGIN}.$lockfolder";
+open(LOCKFILE, ">$lockfilename")
+  or QUIT("Unable to open lockfile $lockfilename");
+flock(LOCKFILE, 6)
+  or QUIT("Collision! Unable to get lock for folder $FOLDERNAME");
+
+# set some vars
+$sendmail = $CONFIG{"SENDMAIL"} || $defaultsendmail;
+
+# connect, log in, and select the folder
+$IMAP = new Net::IMAP($CONFIG{"SERVER"},
+                      "Debug" => 0, "Synchronous" => 1)
+  or QUIT("Error connecting to server $CONFIG{'SERVER'}: $!");
+
+imapOK($response = $IMAP->login($CONFIG{"LOGIN"}, $CONFIG{"PASSWORD"}))
+  or QUIT("Error logging in to $CONFIG{'SERVER'} as $CONFIG{'LOGIN'}: ",
+          $response->status_text);
+
+imapOK($response = $IMAP->select($FOLDERNAME))
+  or QUIT("Error selecting folder $FOLDERNAME: ", $response->status_text);
+
+# start doing the real work
+$lastbody = 0;
+$main::msgnum = 1;
+$main::maxmsg = $IMAP->{Mailbox}->{EXISTS};
+DEBUG("Opened $FOLDERNAME, $main::maxmsg messages.");
+while ($main::msgnum <= $main::maxmsg) {
+  if (!imapOK($response = $IMAP->fetch($main::msgnum, 'RFC822.HEADER'))) {
+    ERROR("Error getting message $main::msgnum: ", $response->status_text);
+    next;
+  }
+  if (!($main::headers = getDataItem('RFC822.HEADER', $response->{Data}[0]))) {
+    ERROR("Null headers in message $main::msgnum - message deleted?");
+    next;
+  }
+  parseHeader();
+  evalFilter();
+  $main::msgnum++;
+}
+
+# shut things down and exit
+imapOK($response = $IMAP->close)
+  or QUIT("Error closing folder $FOLDERNAME: ", $response->status_text);
+
+imapOK($response = $IMAP->logout)
+  or QUIT("Error logging out of $CONFIG{'SERVER'}: ", $response->status_text);
+
+DEBUG("Normal exit.");
+
+exit(0);
+
+sub sigHandler {
+  ERROR("Caught a SIG$_[0] - shutting down");
+  exit(1);
+}
+
+sub warnSigHandler {
+  # report eval and other warnings via ERROR mechanism
+  ImapFilter::ERROR("Filter $ImapFilter::FILTERNAME on $ImapFilter::FOLDERNAME:$main::msgnum encountered warning: $_[0]");
+}
+
+sub imapOK {
+  return $_[0]->status eq 'OK';
+}
+
+sub getDataItem {
+  my ($item, $data) = @_;
+  shift @$data while (($#$data >= 0) && ($item ne shift @$data));
+  return shift @$data;
+}
+
+sub evalFilter {
+  package main; # execute filter in 'main' namespace
+
+  eval $ImapFilter::FILTER;
+
+  package ImapFilter; # reset namespace
+
+  QUIT("Error executing filter $FILTERNAME: $@")
+    if ($@ && !($@ =~ /ImapFilter normal exit/));
+}
+
+sub parseHeader {
+  my ($name, $val, $line, $tmphdr);
+
+  undef %main::header;
+
+  # parse out the header strings
+  ($tmphdr = $main::headers) =~ s/\n\s+/ /g; # fix continuation lines
+  $tmphdr =~ s/[ \t\r]+/ /g; # clean up white space
+  $tmphdr =~ s/ +$//mg; # strip trailing spaces
+  foreach $line (split(/\n/, $tmphdr)) {
+    ($name, $val) = split(/:\s*/, $line, 2);
+    next unless $name && $val;
+    $name = lc $name; # lowercase name for hash
+    $main::header{$name} .= " ||| " if $main::header{$name};
+    $main::header{$name} .= $val;
+  }
+
+  # do some useful stuff
+  $main::from    = $main::header{"from"};
+  $main::to      = $main::header{"to"};
+  $main::cc      = $main::header{"cc"};
+  $main::subject = $main::header{"subject"};
+  $main::date    = $main::header{"date"};
+
+  # garbage to get rid of "only once" and "undefined" warnings
+  $main::from    = "" unless $main::from;
+  $main::to      = "" unless $main::to;
+  $main::cc      = "" unless $main::cc;
+  $main::subject = "" unless $main::subject;
+  $main::date    = "" unless $main::date;
+
+  # a couple more useful vars
+  $main::days    = str2time($main::date);
+  $main::tocc    = $main::to . ($main::to && $main::cc ? ", " : "") . $main::cc;
+  $main::days    = "" unless $main::days;
+  $main::tocc    = "" unless $main::tocc;
+
+  # construct '$addressees'
+  $main::addressees = "";
+  foreach $name (@addrheaders) {
+    if ($main::header{$name}) {
+      $main::addressees .= ", " if $main::addressees;
+      $main::addressees .= $main::header{$name};
+    }
+  }
+
+}
+
+sub realFile {
+  $_[0] =~ s{^~([^/]*)}
+            {$1 ? (getpwnam($1))[7] : ($ENV{HOME} || $ENV{LOGDIR})}ex;
+  return $_[0];
+}
+
+sub readConfig {
+  my ($configfilename) = @_;
+  $configfilename = realFile($configfilename);
+#  DEBUG("Opening config file $configfilename");
+  open(CONF, "<$configfilename") ||
+    die timePrefix(), "Failed to open config file $configfilename: $!";
+  while (<CONF>) {
+    next if /^#/;
+    ($var, $val) = split;
+    $var = uc $var;
+    $CONFIG{$var} = $val;
+#    DEBUG("Read config entry $var = $val");
+  }
+  close(CONF);
+  die timePrefix(), "Config file must contain all of SERVER, LOGIN, PASSWORD\nand either ERRORLOG or ERRORMAIL"
+    unless $CONFIG{"SERVER"} && $CONFIG{"LOGIN"} && $CONFIG{"PASSWORD"} &&
+           ($CONFIG{"ERRORMAIL"} || $CONFIG{"ERRORLOG"});
+}
+
+sub readFilter {
+  my ($filterfilename) = @_;
+  my ($oldrs);
+  $filterfilename = realFile($filterfilename);
+  $oldrs = $/; undef $/; # slurp whole file
+  unless (open(FILT, "<$filterfilename")) {
+    ERROR("Failed to open filter file $filterfilename: $!");
+    exit(1);
+  }
+  $FILTER = <FILT>;
+  close(FILT);
+  $/ = $oldrs; # restore RS
+#  DEBUG("Read filter file $filterfilename, ", length($FILTER), " characters");
+}
+
+sub timePrefix {
+  my ($sec, $min, $hour, $day, $mon, $year) = localtime();
+  return sprintf "%04d/%02d/%02d %02d:%02d:%02d: ",
+                 $year+1900, $mon+1, $day, $hour, $min, $sec;
+}
+
+sub DEBUG {
+  if (defined $CONFIG{"DEBUGLOG"}) {
+    my $debugfilename = realFile($CONFIG{"DEBUGLOG"});
+    if (open(DBG, ">>$debugfilename")) {
+      print DBG timePrefix(), @_, "\n";
+      close(DBG);
+    }
+  }
+  if ($debugtostderr) {
+    print STDERR timePrefix(), @_, "\n";
+  }
+}
+
+sub ERROR {
+  DEBUG("Error: @_");
+  if (defined $CONFIG{"ERRORLOG"}) {
+    my $errorfilename = realFile($CONFIG{"ERRORLOG"});
+    if (open(ERR, ">>$errorfilename")) {
+      print ERR timePrefix(), @_, "\n";
+    }
+  }
+  if (defined $CONFIG{"ERRORMAIL"}) {
+    my $errormail = $CONFIG{"ERRORMAIL"};
+    my $timeprefix = timePrefix();
+    unless (defined($sendmail) && open(CMD, "|$sendmail $errormail")) {
+      die timePrefix(), "sendmail failure: $!, error was @_";
+    }
+    print CMD <<EOT;
+To: $errormail
+Subject: imapfilter error
+
+$timeprefix
+@_
+EOT
+    close(CMD);
+  }
+  if ((!defined $CONFIG{"ERRORMAIL"}) && (!defined $CONFIG{"ERRORLOG"})) {
+    die timePrefix(), @_;
+  }
+}
+
+sub QUIT {
+  ERROR(@_);
+  exit(1);
+}
+
+#
+# Functions used by filters below here
+#
+
+package main; # return to main namespace for funcs avail to filter
+
+# helpers for flagging messages
+sub Deleted  { "\\Deleted"; }
+sub Read     { "\\Seen"; }
+sub Seen     { "\\Seen"; }
+sub Answered { "\\Answered"; }
+sub Draft    { "\\Draft"; }
+sub Flagged  { "\\Flagged"; }
+
+sub DEBUG {
+  ImapFilter::DEBUG(@_);
+  1;
+}
+
+sub ERROR {
+  ImapFilter::ERROR(@_) if @_;
+  EXIT();
+}
+
+sub EXIT {
+  die "ImapFilter normal exit";
+}
+
+sub GETBODY {
+  $errmsg = "";
+  return $body if ($ImapFilter::lastbody == $msgnum);
+  my $response = $ImapFilter::IMAP->fetch($msgnum, 'RFC822.TEXT');
+  if (!ImapFilter::imapOK($response)) {
+    $errmsg = $response->status_text;
+    DEBUG("GETBODY error $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+    return 0;
+  }
+  $body = ImapFilter::getDataItem('RFC822.TEXT', $response->{Data}[0]);
+  $ImapFilter::lastbody = $msgnum;
+  $body = " " if $body eq '""'; # hack to fix empty body response
+  return $body;
+}
+
+sub FILE {
+  return 0 unless COPY(@_);
+  return DELETE();
+}
+
+sub COPY {
+  $errmsg = "";
+  my $response = $ImapFilter::IMAP->copy($msgnum, $_[0]);
+  return 1 if ImapFilter::imapOK($response);
+  $errmsg = $response->status_text;
+  DEBUG("COPY error $ImapFilter::FOLDERNAME:$msgnum, to folder $_[0]: $errmsg");
+  return 0;
+}
+
+sub DELETE {
+  return MARK(Deleted);
+}
+
+sub MARK {
+  $errmsg = "";
+  my $response = $ImapFilter::IMAP->store($msgnum, "+FLAGS", $_[0]);
+  return 1 if ImapFilter::imapOK($response);
+  $errmsg = $response->status_text;
+  DEBUG("MARK error $_[0] $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+  return 0;
+}
+
+sub UNMARK {
+  $errmsg = "";
+  my $response = $ImapFilter::IMAP->store($msgnum, "-FLAGS", $_[0]);
+  return 1 if ImapFilter::imapOK($response);
+  $errmsg = $response->status_text;
+  DEBUG("UNMARK error $_[0] $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+  return 0;
+}
+
+sub BOUNCE {
+  return 0 unless FORWARD(@_);
+  return DELETE();
+}
+
+sub FORWARD {
+# TODO?: insert X-Filtered-By: ImapFilter $version
+  $errmsg = "";
+  unless ($_[0]) {
+    $errmsg = "no mail address specified";
+    DEBUG("FORWARD error $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+    return 0;
+  }
+  return 0 unless GETBODY();
+  if (substr($_[0], 0, 1) eq '|') {
+    if (!open(CMD, "@_")) {
+      $errmsg = "Failed executing @_: $!";
+      DEBUG("FORWARD error $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+      return 0;
+    }
+  }
+  elsif (!defined($ImapFilter::sendmail) || !open(CMD, "|$ImapFilter::sendmail @_")) {
+    $errmsg = "Failed executing $ImapFilter::sendmail: $!";
+    DEBUG("FORWARD error $ImapFilter::FOLDERNAME:$msgnum: $errmsg");
+    return 0;
+  }
+  print CMD $headers, $body;
+  close(CMD);
+  return 1;
+}
+
+sub REPLY {
+  my $replyto = $header{'reply-to'} || $from;
+  return MAIL($replyto, @_);
+}
+
+sub MAIL {
+  $errmsg = "";
+# TODO: implement this
+# TODO?: insert X-Filtered-By: ImapFilter $version
+  ERROR("MAIL not implemented yet!");
+}
+
+sub REJECT {
+  $errmsg = "";
+# TODO: implement this
+# TODO?: insert X-Filtered-By: ImapFilter $version
+  ERROR("REJECT not implemented yet!");
+}
+

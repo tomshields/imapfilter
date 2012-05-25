@@ -1,0 +1,21 @@
+#
+# Sample .imapfilter file
+#
+# The IMAP server name
+SERVER mail.domain.com
+#
+# Your login and password (in clear text)
+# Someday I'll fix this huge security hole...
+LOGIN user
+PASSWORD password
+#
+# I recommend setting either the ERRORLOG or ERRORMAIL (or both)
+# so you are notified if something is going wrong
+ERRORLOG /tmp/imapfilter.err.log
+#ERRORMAIL user@domain.com
+#
+# optional debugging log - set it for more debugging info
+#DEBUGLOG /tmp/imapfilter.dbg.log
+#
+# if your SENDMAIL is in a non-standard place, set it here
+#SENDMAIL=/usr/bin/sendmail

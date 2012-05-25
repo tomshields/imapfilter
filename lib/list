@@ -1,0 +1,19 @@
+#
+# list - ImapFilter filter to list the contents of an IMAP folder
+#
+# usage: imapfilter foldername list [start] [end]
+#
+# also an example of how to do one time initialization and shutdown work
+#
+$first = defined ($ARGV[0]) && $ARGV[0] || 1;
+$last = defined ($ARGV[1]) && $ARGV[1] || 9999;
+if (!defined($initial)) {
+  $initial = 1;
+  print "Num: From                                 Subject\n";
+  print "---  ----                                 -------\n";
+}
+printf("%3d: %-36.36s %-37.37s\n", $msgnum, $from, $subject)
+  if ($msgnum >= $first) && ($msgnum <= $last);
+if ($msgnum == $maxmsg) {
+  print "Total of $maxmsg messages.\n";
+}

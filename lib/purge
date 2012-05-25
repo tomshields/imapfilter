@@ -1,0 +1,15 @@
+#
+# purge - ImapFilter filter to purge messages older than n days
+#
+# usage: imapfilter foldername purge [days]
+# days defaults to 30
+#
+# bugs:
+#   uses the Date: header to determine the age of the message - it should
+#   probably use the envelope From instead
+#   purge 0 doesn't work like expected - use purge -1 instead
+#   
+#
+$daystokeep = $ARGV[0] || 30;
+$delbefore = time - ($daystokeep*24*60*60);
+DELETE() if $days < $delbefore;

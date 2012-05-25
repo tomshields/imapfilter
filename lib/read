@@ -1,0 +1,15 @@
+#
+# read - ImapFilter filter to mark read messages older than n days
+#
+# usage: imapfilter foldername read [days]
+# days defaults to 30
+#
+# bugs:
+#   uses the Date: header to determine the age of the message - it should
+#   probably use the envelope From instead
+#   read 0 doesn't work like expected - use read -1 instead
+#   
+#
+$daystokeep = $ARGV[0] || 30;
+$delbefore = time - ($daystokeep*24*60*60);
+MARK(Read) if $days < $delbefore;

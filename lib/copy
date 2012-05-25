@@ -1,0 +1,13 @@
+#
+# copy - ImapFilter filter to copy from one IMAP folder to another
+#
+# usage: imapfilter foldername copy newfolder [start] [end]
+#
+$tofolder = $ARGV[0]
+  or ERROR("Copy filter must have 'tofolder' argument");
+$first = $ARGV[1] || 1;
+$last = $ARGV[2] || 9999;
+if (($msgnum >= $first) && ($msgnum <= $last)) {
+  COPY($tofolder)
+    or ERROR("Copy failed to folder $tofolder");
+}

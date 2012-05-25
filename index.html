@@ -1,0 +1,84 @@
+<!doctype html public "-//w3c//dtd html 4.0 transitional//en">
+<html>
+<head>
+   <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+   <meta name="Author" content="Tom Shields">
+   <title>ImapFilter</title>
+</head>
+<body bgcolor=#FFFFFF>
+
+<h1>
+<a href="http://www.basswood.com/"><img SRC="http://www.basswood.com/images/logo.gif" height=92 width=108 border=none></a>ImapFilter</h1>
+The latest version is <b>0.8</b>. You can download the latest version
+as <a href="imapfilter_0.8.tar.gz">imapfilter_0.8.tar.gz</a>.
+<p>ImapFilter is a <a href="http://www.perl.com/">Perl</a> program for filtering
+an <a href="http://www.imap.org/">IMAP</a> mailbox according to a set of rules.
+I use ImapFilter to filter my inbox into a set of IMAP folders. I also
+use it for mail folder maintenance, by running a different rules file over
+each folder periodically. The advantage this has over other filters
+(e.g. procmail, mailagent, and zfilter) is that it is totally independent
+of the mail delivery.
+<p>There are two mailing lists for ImapFilter, one for general discussion
+and help, and another for announcements. They are coming soon...
+<p>ImapFilter was originally written by <a href="http://www.basswood.com/ts/index.html">Tom
+Shields</a>, 4/4/1998
+<p>ImapFilter includes the following required packages:
+<ul>
+<li>
+Net::IMAP by Kevin Johnson &lt;kjj@pobox.com></li>
+<li>
+Date::Parse by Graham Barr &lt;Graham.Barr@pobox.com></li>
+</ul>
+Contributions to ImapFilter are always welcome, and may be emailed to <a href="mailto:imapfilter@basswood.com">imapfilter@basswood.com</a>.
+Here is the current ToDo list:
+<ul>
+<li>
+Finish MAIL, REJECT functions</li>
+<li>
+Built-in to canonicalize an email address, e.g. From/Reply-To</li>
+<li>
+Add ABORT to bail out entirely and stop processing messages</li>
+<li>
+Parse message flags for filter use (could write 'summary' filter showing
+new, seen, total in folder)</li>
+<li>
+Add "copyandmarkread" semantic, for archive folders - 2nd param to COPY?</li>
+<li>
+Add BEGIN and END block semantics to filters for one-time init and shutdown
+- can simulate now, but ugly</li>
+<li>
+Use getopt for option processing</li>
+<li>
+Allow configuration parameters to be set via command line</li>
+<li>
+Improve fetch efficiency by getting more than one header at a time</li>
+<li>
+Figure out way to encrypt password in conf file</li>
+<li>
+Built-in handling of ranges and lists of message numbers efficiently</li>
+<li>
+Add equivalent of perl's "-e" flag for short filters - maybe use "-" to
+mean read script from stdin</li>
+<li>
+Clean up signal handling a bit - remove lock file</li>
+<li>
+Handle message on stdin - use "-" as folder - would need to be able to
+store message in IMAP folder</li>
+<li>
+Write 'imapfolder' for folder create/delete/empty/list all/summarize</li>
+</ul>
+
+<p><a href="http://www.basswood.com/">Basswood Associates</a> is a
+professional services firm that specializes in strategic and technical
+consulting in the areas of Internet advertising and electronic commerce.
+<p><a href="http://www.basswood.com/oss/index.html">Basswood Open Source
+Software</a>
+<p><address>$Id: index.html,v 1.9 1999/01/29 06:37:10 ts Exp $ - <a href="mailto:webmaster@basswood.com">webmaster@basswood.com</a></address>
+<!-- Standard code for requesting a GUID from www.guid.org -->
+<script language=Javascript><!-- // check for GUID before requesting it
+i=document.cookie.indexOf("GUID="); if (i == null || i == -1)
+document.write("<img height=1 width=1 src=\"http://www.guid.org/send-guid?Redirect=http:%2F%2Fwww.basswood.com/cgi-bin/setguid.pl\">")
+// --></script><noscript><!-- This part for non-JS browsers -->
+<img height=1 width=1 src="http://www.guid.org/send-guid?Redirect=http:%2F%2Fwww.basswood.com/cgi-bin/setguid.pl"></noscript>
+</body>
+</html>
